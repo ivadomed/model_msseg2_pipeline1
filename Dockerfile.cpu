@@ -1,0 +1,71 @@
+# ------------- Install ANTs (Build Stage 0) -------------
+FROM kaczmarj/ants:v2.2.0-source
+
+# ------------- Install SCT (Build Stage 1) -------------
+FROM vnmd/spinalcordtoolbox_5.3.0:latest
+
+# ------------- Install FSL (Build Stage 2) -------------
+FROM brainlife/fsl:5.0.11
+
+# ------------- General Setup (Build Stage 3) -------------
+FROM python:slim-buster
+
+# Copy files from images for ANTs, SCT, and FSL
+COPY --from=0 /opt/ants/ /ants/
+COPY --from=1 /opt/spinalcordtoolbox-5.3.0/ /opt/spinalcordtoolbox-5.3.0/
+COPY --from=2 /opt/fsl-5.0.11/ /usr/local/fsl
+
+# Update PATH variable for ANTs, SCT, and FSL
+ENV PATH="/ants/:${PATH}"
+ENV PATH="/opt/spinalcordtoolbox-5.3.0/bin/:${PATH}"
+ENV FSLDIR=/usr/local/fsl
+ENV PATH=$PATH:$FSLDIR/bin
+ENV LD_LIBRARY_PATH=$FSLDIR/lib
+ENV FSLOUTPUTTYPE=NIFTI_GZ
+
+# Install packages that are required for the pipeline
+RUN apt-get update && apt-get install -y --no-install-recommends apt-utils ca-certificates wget unzip git git-lfs
+RUN update-ca-certificates
+RUN apt-get update && apt-get -y install cmake protobuf-compiler
+RUN pip --default-timeout=1000 install tqdm numpy nibabel torch ivadomed
+
+# ------------- Install ANIMA -------------
+WORKDIR /anima/
+RUN wget -q https://github.com/Inria-Visages/Anima-Public/releases/download/v4.0.1/Anima-Ubuntu-4.0.1.zip
+RUN unzip Anima-Ubuntu-4.0.1.zip
+RUN git lfs install
+RUN git clone --depth 1 https://github.com/Inria-Visages/Anima-Scripts-Public.git
+RUN git clone --depth 1 https://github.com/Inria-Visages/Anima-Scripts-Data-Public.git
+RUN mkdir /root/.anima/
+COPY config.txt /root/.anima
+RUN mkdir /data/
+
+# ------------- Changes & Hacks for Compatibility -------------
+RUN pip --default-timeout=1000 install torch==1.7.1
+RUN touch /usr/local/lib/python3.9/site-packages/ivadomed/version.txt
+
+# ------------- Model & Inference Setup -------------
+WORKDIR /pipeline/
+COPY models.py /pipeline
+COPY setup.sh /pipeline
+COPY unet-t=2-gt=consensus-bs=4-sl=dice-bal=naive_duplication-lr=3e-05-svs=128-srs=64-bnf=8-se=42.pt /pipeline
+RUN mkdir -p /pipeline/data/input/raw_data
+RUN mkdir -p /pipeline/data/input/preprocessed
+RUN mkdir -p /pipeline/data/output
+ENV raw_data=/pipeline/data/input/
+ENV preprocessed=/pipeline/data/input/preprocessed
+ENV RESULTS_FOLDER=/pipeline/data/output/
+COPY process.py /pipeline/
+
+# ------------- Final Checks -------------
+# To check if ANTs is installed as expected
+RUN antsRegistration --help
+
+# To check if FSL is installed as expected
+RUN bet2 --help
+
+# To check if SCT is installed as expected
+RUN sct_deepseg_sc --help
+
+# To check if ANIMA is installed as expected
+RUN /anima/Anima-Binaries-4.0.1/animaN4BiasCorrection --help
